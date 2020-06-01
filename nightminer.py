@@ -38,11 +38,11 @@
 #   Scrypt Algorithm        - http://www.tarsnap.com/scrypt/scrypt.pdf
 #   Scrypt Implementation   - https://code.google.com/p/scrypt/source/browse/trunk/lib/crypto/crypto_scrypt-ref.c
 
-import base64, binascii, json, hashlib, hmac, math, socket, struct, sys, threading, time, urlparse
+import base64, binascii, json, hashlib, hmac, math, socket, struct, sys, threading, time, urlparse, pprint
 
 # DayMiner (ah-ah-ah), fighter of the...
-USER_AGENT = "NightMiner"
-VERSION = [0, 1]
+USER_AGENT = "RevisedNightMiner"
+VERSION = [0.1]
 
 # You're a master of Karate and friendship for everyone.
 
@@ -58,6 +58,7 @@ ALGORITHMS = [ ALGORITHM_SCRYPT, ALGORITHM_SHA256D ]
 QUIET           = False
 DEBUG           = False
 DEBUG_PROTOCOL  = False
+FORMATTED       = False
 
 LEVEL_PROTOCOL  = 'protocol'
 LEVEL_INFO      = 'info'
@@ -72,7 +73,6 @@ SCRYPT_LIBRARY_SCRYPT   = 'scrypt (https://pypi.python.org/pypi/scrypt/)'
 SCRYPT_LIBRARY_PYTHON   = 'pure python'
 SCRYPT_LIBRARIES = [ SCRYPT_LIBRARY_AUTO, SCRYPT_LIBRARY_LTC, SCRYPT_LIBRARY_SCRYPT, SCRYPT_LIBRARY_PYTHON ]
 
-
 def log(message, level):
   '''Conditionally write a message to stdout based on command line options and level.'''
 
@@ -84,11 +84,12 @@ def log(message, level):
   if not DEBUG_PROTOCOL and level == LEVEL_PROTOCOL: return
   if not DEBUG and level == LEVEL_DEBUG: return
 
-  if level != LEVEL_PROTOCOL: message = '[%s] %s' % (level.upper(), message)
+  if level != LEVEL_PROTOCOL:
+    message = '[%s] %s' % (level.upper(), message)
 
   print ("[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
 
-
+  
 # Convert from/to binary and hexidecimal strings (could be replaced with .encode('hex') and .decode('hex'))
 hexlify = binascii.hexlify
 unhexlify = binascii.unhexlify
@@ -437,6 +438,7 @@ class Job(object):
 
       merkle_root_bin = self.merkle_root_bin(extranounce2_bin)
       header_prefix_bin = swap_endian_word(self._version) + swap_endian_words(self._prevhash) + merkle_root_bin + swap_endian_word(self._ntime) + swap_endian_word(self._nbits)
+#      pprint.pprint("target : %s" % self.target, stream=sys.stderr) # hoge
       for nounce in xrange(nounce_start, 0x7fffffff, nounce_stride):
         # This job has been asked to stop
         if self._done:
@@ -446,7 +448,7 @@ class Job(object):
         # Proof-of-work attempt
         nounce_bin = struct.pack('<I', nounce)
         pow = self.proof_of_work(header_prefix_bin + nounce_bin)[::-1].encode('hex')
-
+#        pprint.pprint("%s : %s" % (self.target, pow), stream=sys.stderr) # hoge
         # Did we reach or exceed our target?
         if pow <= self.target:
           result = dict(
@@ -513,6 +515,7 @@ class Subscription(object):
   def set_difficulty(self, difficulty):
     if difficulty < 0: raise self.StateException('Difficulty must be non-negative')
 
+#    difficulty = 8 # hoge
     # Compute target
     if difficulty == 0:
       target = 2 ** 256 - 1
@@ -571,7 +574,7 @@ class SubscriptionScrypt(Subscription):
 class SubscriptionSHA256D(Subscription):
   '''Subscription for Double-SHA256-based coins, like Bitcoin.'''
 
-  ProofOfWork = sha256d
+  ProofOfWork = lambda s, h: sha256d(h)
 
 
 # Maps algorithms to their respective subscription objects
@@ -617,6 +620,7 @@ class SimpleJsonRpcClient(object):
 
   def _handle_incoming_rpc(self):
     data = ""
+    global FORMATTED
     while True:
       # Get the next line if we have one, otherwise, read and block
       if '\n' in data:
@@ -626,14 +630,17 @@ class SimpleJsonRpcClient(object):
         data += chunk
         continue
 
-      log('JSON-RPC Server > ' + line, LEVEL_PROTOCOL)
-
       # Parse the JSON
       try:
         reply = json.loads(line)
       except Exception, e:
         log("JSON-RPC Error: Failed to parse JSON %r (skipping)" % line, LEVEL_ERROR)
         continue
+
+      if FORMATTED:
+        log('Stratum > Miner ' + json.dumps(reply, indent=1), LEVEL_PROTOCOL) # hoge 
+      else:
+        log('JSON-RPC Server > ' + line, LEVEL_PROTOCOL)
 
       try:
         request = None
@@ -656,21 +663,25 @@ class SimpleJsonRpcClient(object):
 
   def send(self, method, params):
     '''Sends a message to the JSON-RPC server'''
+    global FORMATTED
 
     if not self._socket:
       raise self.ClientException('Not connected')
 
     request = dict(id = self._message_id, method = method, params = params)
     message = json.dumps(request)
+
     with self._lock:
       self._requests[self._message_id] = request
       self._message_id += 1
       self._socket.send(message + '\n')
 
-    log('JSON-RPC Server < ' + message, LEVEL_PROTOCOL)
+    if FORMATTED:
+      log('Stratum < Miner ' + json.dumps(request,indent=1), LEVEL_PROTOCOL) # hoge
+    else:
+      log(message, LEVEL_PROTOCOL)
 
     return request
-
 
   def connect(self, socket):
     '''Connects to a remove JSON-RPC server'''
@@ -723,9 +734,10 @@ class Miner(SimpleJsonRpcClient):
         raise self.MinerWarning('Malformed mining.notify message', reply)
 
       (job_id, prevhash, coinb1, coinb2, merkle_branches, version, nbits, ntime, clean_jobs) = reply['params']
-      self._spawn_job_thread(job_id, prevhash, coinb1, coinb2, merkle_branches, version, nbits, ntime)
-
-      log('New job: job_id=%s' % job_id, LEVEL_DEBUG)
+#      pprint.pprint("clean_jobs : %s" % clean_jobs, stream=sys.stdout) # hoge
+      if clean_jobs != False : # hoge
+        self._spawn_job_thread(job_id, prevhash, coinb1, coinb2, merkle_branches, version, nbits, ntime)
+        log('New job: job_id=%s' % job_id, LEVEL_DEBUG)
 
     # The server wants us to change our difficulty (on all *future* work)
     elif reply.get('method') == 'mining.set_difficulty':
@@ -803,6 +815,7 @@ class Miner(SimpleJsonRpcClient):
     def run(job):
       try:
         for result in job.mine():
+#          pprint.pprint(self._subscription.worker_name, stream=sys.stderr)
           params = [ self._subscription.worker_name ] + [ result[k] for k in ('job_id', 'extranounce2', 'ntime', 'nounce') ]
           self.send(method = 'mining.submit', params = params)
           log("Found share: " + str(params), LEVEL_INFO)
@@ -900,6 +913,7 @@ if __name__ == '__main__':
 
   parser.add_argument('-q', '--quiet', action ='store_true', help = 'suppress non-errors')
   parser.add_argument('-P', '--dump-protocol', dest = 'protocol', action ='store_true', help = 'show all JSON-RPC chatter')
+  parser.add_argument('-f', '--formatted', action ='store_true', help = 'show formatted data when dumping all JSON-RPC chatter')
   parser.add_argument('-d', '--debug', action ='store_true', help = 'show extra debug information')
 
   parser.add_argument('-v', '--version', action = 'version', version = '%s/%s' % (USER_AGENT, '.'.join(str(v) for v in VERSION)))
@@ -932,16 +946,16 @@ if __name__ == '__main__':
   if options.debug:DEBUG = True
   if options.protocol: DEBUG_PROTOCOL = True
   if options.quiet: QUIET = True
+  if options.formatted: FORMATTED = True
 
-  if DEBUG:
+  if DEBUG and options.algo == ALGORITHM_SCRYPT:
     for library in SCRYPT_LIBRARIES:
       set_scrypt_library(library)
       test_subscription()
 
     # Set us to a faster library if available
     set_scrypt_library()
-    if options.algo == ALGORITHM_SCRYPT:
-      log('Using scrypt library %r' % SCRYPT_LIBRARY, LEVEL_DEBUG)
+    log('Using scrypt library %r' % SCRYPT_LIBRARY, LEVEL_DEBUG)
 
   # The want a daemon, give them a daemon
   if options.background:
